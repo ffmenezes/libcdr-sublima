@@ -1,0 +1,1124 @@
+diff -ru '--exclude=sublima' '--exclude=.git' upstream/libcdr/configure.ac fork/configure.ac
+--- upstream/libcdr/configure.ac	2026-10-15 18:26:15.431008562 +0000
++++ fork/configure.ac	2026-10-15 18:05:45.000000000 +0000
+@@ -7,7 +7,7 @@
+ # ====================
+ m4_define([libcdr_version_major],[0])
+ m4_define([libcdr_version_minor],[1])
+-m4_define([libcdr_version_micro],[9])
++m4_define([libcdr_version_micro],[10])
+ m4_define([libcdr_version],[libcdr_version_major.libcdr_version_minor.libcdr_version_micro])
+ 
+ # =============
+diff -ru '--exclude=sublima' '--exclude=.git' upstream/libcdr/src/fuzz/cdrfuzzer.cpp fork/src/fuzz/cdrfuzzer.cpp
+--- upstream/libcdr/src/fuzz/cdrfuzzer.cpp	2026-10-15 18:26:15.433043142 +0000
++++ fork/src/fuzz/cdrfuzzer.cpp	2026-10-15 18:05:45.000000000 +0000
+@@ -16,8 +16,12 @@
+ 
+ #include <librevenge-stream/librevenge-stream.h>
+ 
++#include "fuzzerlimits.hxx"
++
+ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+ {
++  if (size > maxFuzzInputSize)
++    return 0;
+   librevenge::RVNGStringStream input(data, size);
+   librevenge::RVNGDummyDrawingGenerator generator;
+   libcdr::CDRDocument::parse(&input, &generator);
+diff -ru '--exclude=sublima' '--exclude=.git' upstream/libcdr/src/fuzz/cmxfuzzer.cpp fork/src/fuzz/cmxfuzzer.cpp
+--- upstream/libcdr/src/fuzz/cmxfuzzer.cpp	2026-10-15 18:26:15.433043142 +0000
++++ fork/src/fuzz/cmxfuzzer.cpp	2026-10-15 18:05:45.000000000 +0000
+@@ -16,8 +16,12 @@
+ 
+ #include <librevenge-stream/librevenge-stream.h>
+ 
++#include "fuzzerlimits.hxx"
++
+ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
+ {
++  if (size > maxFuzzInputSize)
++    return 0;
+   librevenge::RVNGStringStream input(data, size);
+   librevenge::RVNGDummyDrawingGenerator generator;
+   libcdr::CMXDocument::parse(&input, &generator);
+Only in fork/src/fuzz: fuzzerlimits.hxx
+diff -ru '--exclude=sublima' '--exclude=.git' upstream/libcdr/src/fuzz/Makefile.am fork/src/fuzz/Makefile.am
+--- upstream/libcdr/src/fuzz/Makefile.am	2026-10-15 18:26:15.433043142 +0000
++++ fork/src/fuzz/Makefile.am	2026-10-15 18:05:45.000000000 +0000
+@@ -1,5 +1,7 @@
+ noinst_PROGRAMS = cdrfuzzer cmxfuzzer
+ 
++noinst_HEADERS = fuzzerlimits.hxx
++
+ AM_CXXFLAGS = -I$(top_srcdir)/inc \
+ 	$(REVENGE_GENERATORS_CFLAGS) \
+ 	$(REVENGE_CFLAGS) \
+diff -ru '--exclude=sublima' '--exclude=.git' upstream/libcdr/src/lib/CDRCollector.cpp fork/src/lib/CDRCollector.cpp
+--- upstream/libcdr/src/lib/CDRCollector.cpp	2026-10-15 18:26:15.433114643 +0000
++++ fork/src/lib/CDRCollector.cpp	2026-10-15 18:05:45.000000000 +0000
+@@ -50,7 +50,7 @@
+   if (!tmpProfile)
+     return;
+   cmsHPROFILE tmpRGBProfile = cmsCreate_sRGBProfile();
+-  cmsColorSpaceSignature signature = cmsGetColorSpace(tmpProfile);
++  cmsUInt32Number signature = cmsUInt32Number(cmsGetColorSpace(tmpProfile));
+   switch (signature)
+   {
+   case cmsSigCmykData:
+diff -ru '--exclude=sublima' '--exclude=.git' upstream/libcdr/src/lib/CDRCollector.h fork/src/lib/CDRCollector.h
+--- upstream/libcdr/src/lib/CDRCollector.h	2026-10-15 18:26:15.433114643 +0000
++++ fork/src/lib/CDRCollector.h	2026-10-15 18:05:45.000000000 +0000
+@@ -33,6 +33,9 @@
+   CDRParserState();
+   ~CDRParserState();
+   std::map<unsigned, librevenge::RVNGBinaryData> m_bmps;
++  // Sublima: mascara de transparencia (8 bits) dos bitmaps — largura, altura, bytes por linha, dados
++  struct BmpMask { unsigned width, height, bpl; librevenge::RVNGBinaryData data; };
++  std::map<unsigned, BmpMask> m_bmpMasks;
+   std::map<unsigned, CDRPattern> m_patterns;
+   std::map<unsigned, librevenge::RVNGBinaryData> m_vects;
+   std::vector<CDRPage> m_pages;
+@@ -69,6 +72,13 @@
+   virtual void collectObject(unsigned level) = 0;
+   virtual void collectGroup(unsigned level) = 0;
+   virtual void collectVect(unsigned level) = 0;
++  // Sublima: PowerClip support
++  virtual void collectClipContents(unsigned level) { collectVect(level); }
++  virtual void collectPowerClipId(unsigned) {}
++  virtual void collectTransparency(const librevenge::RVNGPropertyList &) {}
++  virtual void collectDropShadow(const librevenge::RVNGPropertyList &) {}
++  virtual void collectLink(unsigned, unsigned, unsigned) {}
++  virtual void collectTextOnPath(const librevenge::RVNGPropertyList &) {}
+   virtual void collectOtherList() = 0;
+   virtual void collectPath(const CDRPath &path) = 0;
+   virtual void collectLevel(unsigned level) = 0;
+@@ -84,6 +94,7 @@
+   virtual void collectBitmap(unsigned imageId, double x1, double x2, double y1, double y2) = 0;
+   virtual void collectBmp(unsigned imageId, unsigned colorModel, unsigned width, unsigned height, unsigned bpp, const std::vector<unsigned> &palette, const std::vector<unsigned char> &bitmap) = 0;
+   virtual void collectBmp(unsigned imageId, const std::vector<unsigned char> &bitmap) = 0;
++  virtual void collectBmpMask(unsigned, unsigned, unsigned, unsigned, const std::vector<unsigned char> &) {}
+   virtual void collectBmpf(unsigned patternId, unsigned width, unsigned height, const std::vector<unsigned char> &pattern) = 0;
+   virtual void collectPpdt(const std::vector<std::pair<double, double> > &points, const std::vector<unsigned> &knotVector) = 0;
+   virtual void collectFillTransform(const CDRTransforms &fillTrafos) = 0;
+diff -ru '--exclude=sublima' '--exclude=.git' upstream/libcdr/src/lib/CDRContentCollector.cpp fork/src/lib/CDRContentCollector.cpp
+--- upstream/libcdr/src/lib/CDRContentCollector.cpp	2026-10-15 18:26:15.439102148 +0000
++++ fork/src/lib/CDRContentCollector.cpp	2026-10-15 18:05:45.000000000 +0000
+@@ -64,7 +64,7 @@
+                                                  bool reverseOrder)
+   : m_painter(painter), m_isDocumentStarted(false), m_isPageProperties(false), m_isPageStarted(false),
+     m_ignorePage(false), m_page(ps.m_pages[0]), m_pageIndex(0), m_currentFillStyle(), m_currentLineStyle(),
+-    m_spnd(0), m_currentObjectLevel(0), m_currentGroupLevel(0), m_currentVectLevel(0), m_currentPageLevel(0),
++    m_spnd(0), m_currentImageId(0), m_currentTransparency(), m_currentObjectSpnd(0), m_links(), m_pathsBySpnd(), m_currentTextOnPath(), m_isInClipContents(false), m_currentPowerClipId(0), m_clipContents(), m_currentObjectLevel(0), m_currentGroupLevel(0), m_currentVectLevel(0), m_currentPageLevel(0),
+     m_currentStyleId(0), m_currentImage(), m_currentText(nullptr), m_currentBBox(), m_currentTextBox(), m_currentPath(),
+     m_currentTransforms(), m_fillTransforms(), m_polygon(), m_isInPolygon(false), m_isInSpline(false),
+     m_outputElementsStack(nullptr), m_contentOutputElementsStack(), m_fillOutputElementsStack(),
+@@ -152,6 +152,10 @@
+   if (!m_isPageStarted && !m_currentVectLevel && !m_ignorePage)
+     _startPage(m_page.width, m_page.height);
+   m_currentObjectLevel = level;
++  m_currentPowerClipId = 0;
++  m_currentTransparency.clear();
++  m_currentObjectSpnd = 0;
++  m_currentTextOnPath.clear();
+   m_currentFillStyle = CDRFillStyle();
+   m_currentLineStyle = CDRLineStyle();
+   m_currentStyleId = 0;
+@@ -190,6 +194,41 @@
+   m_page.offsetY = 0.0;
+ }
+ 
++void libcdr::CDRContentCollector::collectClipContents(unsigned level)
++{
++  collectVect(level);
++  m_isInClipContents = true;
++  // PowerClip contents live in page coordinates
++  if (!m_ps.m_pages.empty())
++    m_page = m_ps.m_pages[0];
++}
++
++void libcdr::CDRContentCollector::collectPowerClipId(unsigned id)
++{
++  m_currentPowerClipId = id;
++}
++
++void libcdr::CDRContentCollector::collectTransparency(const librevenge::RVNGPropertyList &props)
++{
++  m_currentTransparency = props;
++}
++
++void libcdr::CDRContentCollector::collectDropShadow(const librevenge::RVNGPropertyList &props)
++{
++  // marcador: grupo vazio com os parametros; aplica-se ao proximo objeto na ordem de desenho
++  if (!m_isPageStarted && !m_currentVectLevel && !m_ignorePage)
++    _startPage(m_page.width, m_page.height);
++  CDROutputElementList outputElement;
++  librevenge::RVNGPropertyList p(props);
++  p.insert("sublima:drop-shadow", true);
++  outputElement.addStartGroup(p);
++  outputElement.addEndGroup();
++  if (m_reverseOrder)
++    m_outputElementsStack->push(outputElement);
++  else
++    m_outputElementsQueue->push(outputElement);
++}
++
+ void libcdr::CDRContentCollector::collectFlags(unsigned flags, bool considerFlags)
+ {
+   if (m_isPageProperties && !(flags & 0x00ff0000))
+@@ -215,6 +254,8 @@
+ 
+ void libcdr::CDRContentCollector::_flushCurrentPath()
+ {
++  librevenge::RVNGPropertyListVector clipPathD;
++  librevenge::RVNGPropertyListVector bitmapCropD;
+   CDR_DEBUG_MSG(("CDRContentCollector::_flushCurrentPath\n"));
+   CDROutputElementList outputElement;
+   if (!m_currentPath.empty() || (!m_splineData.empty() && m_isInSpline))
+@@ -238,7 +279,15 @@
+     librevenge::RVNGPropertyList style;
+     _fillProperties(style);
+     _lineProperties(style);
+-    outputElement.addStyle(style);
++    {
++      librevenge::RVNGPropertyList::Iter ti(m_currentTransparency);
++      for (ti.rewind(); ti.next();)
++        if (ti()) style.insert(ti.key(), ti()->clone());
++    }
++    // Sublima: num objeto bitmap o caminho e o recorte da imagem, nao uma forma pintada
++    const bool isBitmapCrop = m_currentImage.getImage().size() > 0;
++    if (!isBitmapCrop)
++      outputElement.addStyle(style);
+     m_currentPath.transform(m_currentTransforms);
+     if (!m_groupTransforms.empty())
+       m_currentPath.transform(m_groupTransforms.top());
+@@ -253,6 +302,7 @@
+     m_currentPath.writeOut(path);
+ 
+     bool isPathClosed = m_currentPath.isClosed();
++    (void)isPathClosed;
+ 
+     librevenge::RVNGPropertyListVector::Iter i(path);
+     for (i.rewind(); i.next();)
+@@ -343,7 +393,13 @@
+         outputPath.append(*iter);
+       librevenge::RVNGPropertyList propList;
+       propList.insert("svg:d", outputPath);
+-      outputElement.addPath(propList);
++      if (!isBitmapCrop)
++        outputElement.addPath(propList);
++      else
++        bitmapCropD = outputPath;
++      clipPathD = outputPath;
++      if (m_currentObjectSpnd)
++        m_pathsBySpnd[m_currentObjectSpnd] = outputPath;
+ 
+     }
+     m_currentPath.clear();
+@@ -412,8 +468,23 @@
+     if (!CDR_ALMOST_ZERO(rotate))
+       propList.insert("librevenge:rotate", rotate * 180 / M_PI, librevenge::RVNG_GENERIC);
+ 
++    if (bitmapCropD.count())
++      propList.insert("sublima:crop-d", bitmapCropD);
+     propList.insert("librevenge:mime-type", "image/bmp");
++    {
++      librevenge::RVNGPropertyList::Iter ti(m_currentTransparency);
++      for (ti.rewind(); ti.next();)
++        if (ti()) propList.insert(ti.key(), ti()->clone());
++    }
+     propList.insert("office:binary-data", m_currentImage.getImage());
++    std::map<unsigned, CDRParserState::BmpMask>::const_iterator mi = m_ps.m_bmpMasks.find(m_currentImageId);
++    if (mi != m_ps.m_bmpMasks.end() && mi->second.data.size())
++    {
++      propList.insert("sublima:alpha-mask", mi->second.data);
++      propList.insert("sublima:alpha-width", (int)mi->second.width);
++      propList.insert("sublima:alpha-height", (int)mi->second.height);
++      propList.insert("sublima:alpha-bpl", (int)mi->second.bpl);
++    }
+     outputElement.addGraphicObject(propList);
+   }
+   if (m_currentText && !m_currentText->empty())
+@@ -480,6 +551,45 @@
+     textFrameProps.insert("fo:padding-bottom", 0.0);
+     textFrameProps.insert("fo:padding-left", 0.0);
+     textFrameProps.insert("fo:padding-right", 0.0);
++    {
++      // Sublima: geometria exata — origem no espaco do objeto + matriz completa (objeto -> pagina, em polegadas, y para baixo)
++      auto toPage = [&](double &px, double &py)
++      {
++        m_currentTransforms.applyToPoint(px, py);
++        if (!m_groupTransforms.empty())
++          m_groupTransforms.top().applyToPoint(px, py);
++        px -= m_page.offsetX;
++        py -= m_page.offsetY;
++        py = m_page.height - py;
++      };
++      double ex = 0.0, ey = 0.0, ax = 1.0, ay = 0.0, cx = 0.0, cy = 1.0;
++      toPage(ex, ey); toPage(ax, ay); toPage(cx, cy);
++      librevenge::RVNGString m;
++      m.sprintf("%.9g %.9g %.9g %.9g %.9g %.9g", ax - ex, ay - ey, cx - ex, cy - ey, ex, ey);
++      textFrameProps.insert("sublima:matrix", m);
++      bool artistic = CDR_ALMOST_ZERO(m_currentTextBox.m_w) && CDR_ALMOST_ZERO(m_currentTextBox.m_h);
++      textFrameProps.insert("sublima:kind", artistic ? "artistic" : "paragraph");
++      textFrameProps.insert("sublima:origin-x", m_currentTextBox.m_x, librevenge::RVNG_GENERIC);
++      textFrameProps.insert("sublima:origin-y", m_currentTextBox.m_y, librevenge::RVNG_GENERIC);
++      textFrameProps.insert("sublima:frame-w", m_currentTextBox.m_w, librevenge::RVNG_GENERIC);
++      textFrameProps.insert("sublima:frame-h", m_currentTextBox.m_h, librevenge::RVNG_GENERIC);
++      librevenge::RVNGPropertyList::Iter ti(m_currentTransparency);
++      for (ti.rewind(); ti.next();)
++        if (ti()) textFrameProps.insert(ti.key(), ti()->clone());
++      if (!m_currentTextOnPath.empty())
++      {
++        librevenge::RVNGPropertyList::Iter tpi(m_currentTextOnPath);
++        for (tpi.rewind(); tpi.next();)
++          if (tpi()) textFrameProps.insert(tpi.key(), tpi()->clone());
++        std::map<unsigned, std::pair<unsigned, unsigned> >::const_iterator li = m_links.find(m_currentObjectSpnd);
++        if (li != m_links.end())
++        {
++          std::map<unsigned, librevenge::RVNGPropertyListVector>::const_iterator pi = m_pathsBySpnd.find(li->second.second);
++          if (pi != m_pathsBySpnd.end())
++            textFrameProps.insert("sublima:text-path-d", pi->second);
++        }
++      }
++    }
+     outputElement.addStartTextObject(textFrameProps);
+     for (const auto &i : *m_currentText)
+     {
+@@ -515,6 +625,13 @@
+       default:
+         break;
+       }
++      {
++        const CDRStyle &ps = currentLine[0].m_style;
++        paraProps.insert("sublima:align", (int)ps.m_align);
++        if (!std::isnan(ps.m_charSpacing)) paraProps.insert("sublima:char-spacing", ps.m_charSpacing, librevenge::RVNG_GENERIC);
++        if (!std::isnan(ps.m_wordSpacing)) paraProps.insert("sublima:word-spacing", ps.m_wordSpacing, librevenge::RVNG_GENERIC);
++        if (!std::isnan(ps.m_lineSpacing)) paraProps.insert("sublima:line-spacing", ps.m_lineSpacing, librevenge::RVNG_GENERIC);
++      }
+       outputElement.addOpenParagraph(paraProps);
+       for (const auto &j : currentLine)
+       {
+@@ -527,6 +644,21 @@
+             spanProps.insert("style:font-name", j.m_style.m_fontName);
+           if (j.m_style.m_fillStyle.fillType != (unsigned short)-1)
+             spanProps.insert("fo:color", m_ps.getRGBColorString(j.m_style.m_fillStyle.color1));
++          spanProps.insert("sublima:font-size-in", j.m_style.m_fontSize, librevenge::RVNG_GENERIC);
++          spanProps.insert("sublima:fill-type", (int)(short)j.m_style.m_fillStyle.fillType);
++          if (j.m_style.m_lineStyle.lineType != (unsigned short)-1 && j.m_style.m_lineStyle.lineWidth > 0.0)
++          {
++            spanProps.insert("sublima:outline-width-in", j.m_style.m_lineStyle.lineWidth, librevenge::RVNG_GENERIC);
++            spanProps.insert("sublima:outline-color", m_ps.getRGBColorString(j.m_style.m_lineStyle.color));
++          }
++          const CDRStyle &cs = j.m_style;
++          if (!std::isnan(cs.m_hShift)) spanProps.insert("sublima:h-shift", cs.m_hShift, librevenge::RVNG_GENERIC);
++          if (!std::isnan(cs.m_vShift)) spanProps.insert("sublima:v-shift", cs.m_vShift, librevenge::RVNG_GENERIC);
++          if (!std::isnan(cs.m_charAngle)) spanProps.insert("sublima:char-angle", cs.m_charAngle, librevenge::RVNG_GENERIC);
++          if (!std::isnan(cs.m_weight)) spanProps.insert("sublima:weight", cs.m_weight, librevenge::RVNG_GENERIC);
++          if (!std::isnan(cs.m_italic)) spanProps.insert("sublima:italic", cs.m_italic, librevenge::RVNG_GENERIC);
++          if (!std::isnan(cs.m_charSpacing)) spanProps.insert("sublima:char-spacing", cs.m_charSpacing, librevenge::RVNG_GENERIC);
++          if (cs.m_fillJson.len()) spanProps.insert("sublima:fill-json", cs.m_fillJson);
+           outputElement.addOpenSpan(spanProps);
+           outputElement.addInsertText(j.m_text);
+           outputElement.addCloseSpan();
+@@ -537,6 +669,21 @@
+     outputElement.addEndTextObject();
+   }
+   m_currentImage = libcdr::CDRImage();
++  if (m_currentPowerClipId && clipPathD.count())
++  {
++    std::map<unsigned, std::vector<CDROutputElementList> >::const_iterator ci = m_clipContents.find(m_currentPowerClipId);
++    if (ci != m_clipContents.end() && !ci->second.empty())
++    {
++      librevenge::RVNGPropertyList groupProps;
++      groupProps.insert("sublima:clip-d", clipPathD);
++      groupProps.insert("sublima:powerclip-id", (int)m_currentPowerClipId);
++      outputElement.addStartGroup(groupProps);
++      for (std::vector<CDROutputElementList>::const_iterator ei = ci->second.begin(); ei != ci->second.end(); ++ei)
++        outputElement.append(*ei);
++      outputElement.addEndGroup();
++    }
++  }
++  m_currentPowerClipId = 0;
+   if (!outputElement.empty())
+   {
+     if (m_reverseOrder)
+@@ -588,7 +735,23 @@
+     m_groupLevels.pop();
+     m_groupTransforms.pop();
+   }
+-  if (m_currentVectLevel && m_spnd && m_groupLevels.empty() && (!m_fillOutputElementsStack.empty() || !m_fillOutputElementsQueue.empty()))
++  if (m_isInClipContents && m_currentVectLevel && m_spnd && m_groupLevels.empty() && (!m_fillOutputElementsStack.empty() || !m_fillOutputElementsQueue.empty()))
++  {
++    std::vector<CDROutputElementList> &contents = m_clipContents[m_spnd];
++    contents.clear();
++    while (!m_fillOutputElementsStack.empty())
++    {
++      contents.push_back(m_fillOutputElementsStack.top());
++      m_fillOutputElementsStack.pop();
++    }
++    while (!m_fillOutputElementsQueue.empty())
++    {
++      contents.push_back(m_fillOutputElementsQueue.front());
++      m_fillOutputElementsQueue.pop();
++    }
++    m_spnd = 0;
++  }
++  else if (m_currentVectLevel && m_spnd && m_groupLevels.empty() && (!m_fillOutputElementsStack.empty() || !m_fillOutputElementsQueue.empty()))
+   {
+     librevenge::RVNGStringVector svgOutput;
+     librevenge::RVNGSVGDrawingGenerator generator(svgOutput, "");
+@@ -636,6 +799,7 @@
+   }
+   if (level <= m_currentVectLevel)
+   {
++    m_isInClipContents = false;
+     m_currentVectLevel = 0;
+     m_outputElementsStack = &m_contentOutputElementsStack;
+     m_outputElementsQueue = &m_contentOutputElementsQueue;
+@@ -1220,6 +1384,7 @@
+ 
+ void libcdr::CDRContentCollector::collectBitmap(unsigned imageId, double x1, double x2, double y1, double y2)
+ {
++  m_currentImageId = imageId;
+   auto iter = m_ps.m_bmps.find(imageId);
+   if (iter != m_ps.m_bmps.end())
+     m_currentImage = CDRImage(iter->second, x1, x2, y1, y2);
+@@ -1248,8 +1413,20 @@
+   m_currentBBox = bBox;
+ }
+ 
++void libcdr::CDRContentCollector::collectLink(unsigned type, unsigned a, unsigned b)
++{
++  m_links[a] = std::make_pair(type, b);
++}
++
++void libcdr::CDRContentCollector::collectTextOnPath(const librevenge::RVNGPropertyList &props)
++{
++  m_currentTextOnPath = props;
++}
++
+ void libcdr::CDRContentCollector::collectSpnd(unsigned spnd)
+ {
++  if (m_currentObjectLevel)
++    m_currentObjectSpnd = spnd;
+   if (m_currentVectLevel && !m_spnd)
+     m_spnd = spnd;
+   else if (!m_currentVectLevel)
+diff -ru '--exclude=sublima' '--exclude=.git' upstream/libcdr/src/lib/CDRContentCollector.h fork/src/lib/CDRContentCollector.h
+--- upstream/libcdr/src/lib/CDRContentCollector.h	2026-10-15 18:26:15.439102148 +0000
++++ fork/src/lib/CDRContentCollector.h	2026-10-15 18:05:45.000000000 +0000
+@@ -39,6 +39,12 @@
+   void collectObject(unsigned level) override;
+   void collectGroup(unsigned level) override;
+   void collectVect(unsigned level) override;
++  void collectClipContents(unsigned level) override;
++  void collectPowerClipId(unsigned id) override;
++  void collectTransparency(const librevenge::RVNGPropertyList &props) override;
++  void collectDropShadow(const librevenge::RVNGPropertyList &props) override;
++  void collectLink(unsigned type, unsigned a, unsigned b) override;
++  void collectTextOnPath(const librevenge::RVNGPropertyList &props) override;
+   void collectOtherList() override;
+   void collectPath(const CDRPath &path) override;
+   void collectLevel(unsigned level) override;
+@@ -99,6 +105,15 @@
+   CDRFillStyle m_currentFillStyle;
+   CDRLineStyle m_currentLineStyle;
+   unsigned m_spnd;
++  unsigned m_currentImageId;
++  librevenge::RVNGPropertyList m_currentTransparency;
++  unsigned m_currentObjectSpnd;
++  std::map<unsigned, std::pair<unsigned, unsigned> > m_links; // a -> (tipo, b)
++  std::map<unsigned, librevenge::RVNGPropertyListVector> m_pathsBySpnd;
++  librevenge::RVNGPropertyList m_currentTextOnPath;
++  bool m_isInClipContents;
++  unsigned m_currentPowerClipId;
++  std::map<unsigned, std::vector<CDROutputElementList> > m_clipContents;
+   unsigned m_currentObjectLevel, m_currentGroupLevel, m_currentVectLevel, m_currentPageLevel, m_currentStyleId;
+   CDRImage m_currentImage;
+   const std::vector<CDRTextLine> *m_currentText;
+diff -ru '--exclude=sublima' '--exclude=.git' upstream/libcdr/src/lib/CDROutputElementList.cpp fork/src/lib/CDROutputElementList.cpp
+--- upstream/libcdr/src/lib/CDROutputElementList.cpp	2026-10-15 18:26:15.440102206 +0000
++++ fork/src/lib/CDROutputElementList.cpp	2026-10-15 18:05:45.000000000 +0000
+@@ -417,4 +417,10 @@
+ 
+ } // namespace libcdr
+ 
++
++void libcdr::CDROutputElementList::append(const CDROutputElementList &other)
++{
++  m_elements.insert(m_elements.end(), other.m_elements.begin(), other.m_elements.end());
++}
++
+ /* vim:set shiftwidth=2 softtabstop=2 expandtab: */
+diff -ru '--exclude=sublima' '--exclude=.git' upstream/libcdr/src/lib/CDROutputElementList.h fork/src/lib/CDROutputElementList.h
+--- upstream/libcdr/src/lib/CDROutputElementList.h	2026-10-15 18:26:15.440102206 +0000
++++ fork/src/lib/CDROutputElementList.h	2026-10-15 18:05:45.000000000 +0000
+@@ -38,6 +38,7 @@
+   void addEndTextObject();
+   void addStartGroup(const librevenge::RVNGPropertyList &propList);
+   void addEndGroup();
++  void append(const CDROutputElementList &other);
+   bool empty() const
+   {
+     return m_elements.empty();
+diff -ru '--exclude=sublima' '--exclude=.git' upstream/libcdr/src/lib/CDRParser.cpp fork/src/lib/CDRParser.cpp
+--- upstream/libcdr/src/lib/CDRParser.cpp	2026-10-15 18:26:15.440102206 +0000
++++ fork/src/lib/CDRParser.cpp	2026-10-15 18:05:45.000000000 +0000
+@@ -1,3 +1,5 @@
++#include <cmath>
++#include <cstring>
+ /* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+ /*
+  * This file is part of the libcdr project.
+@@ -12,6 +14,7 @@
+ #include <locale.h>
+ #include <math.h>
+ #include <string.h>
++#include <algorithm>
+ #include <sstream>
+ #include <set>
+ #ifndef BOOST_ALL_NO_LIB
+@@ -646,8 +649,10 @@
+         else
+           m_precision = libcdr::PRECISION_32BIT;
+       }
+-      else if (listType == CDR_FOURCC_vect || listType == CDR_FOURCC_clpt)
++      else if (listType == CDR_FOURCC_vect)
+         m_collector->collectVect(level);
++      else if (listType == CDR_FOURCC_clpt)
++        m_collector->collectClipContents(level);
+ 
+       bool compressed = (listType == CDR_FOURCC_cmpr ? true : false);
+       CDRInternalStream tmpStream(input, cmprsize, compressed);
+@@ -737,6 +742,9 @@
+   case CDR_FOURCC_spnd:
+     readSpnd(input, length);
+     break;
++  case CDR_FOURCC_lnkt: // Sublima: tabela de vinculos (sombra -> objeto, texto -> curva)
++    readLnkt(input, length);
++    break;
+   case CDR_FOURCC_uidr:
+     readUidr(input, length);
+     break;
+@@ -822,6 +830,14 @@
+   return tmpColor;
+ }
+ 
++// Sublima: canto arredondado do Corel = arco circular; aproximado por cubica (k = 0.5523) a partir do
++// ponto atual do caminho, com o canto em (cx, cy), terminando em (x1, y1).
++static void appendRoundCorner(libcdr::CDRPath &path, double x0, double y0, double cx, double cy, double x1, double y1)
++{
++  const double k = 0.5522847498;
++  path.appendCubicBezierTo(x0 + k * (cx - x0), y0 + k * (cy - y0), x1 + k * (cx - x1), y1 + k * (cy - y1), x1, y1);
++}
++
+ void libcdr::CDRParser::readRectangle(librevenge::RVNGInputStream *input)
+ {
+   double x0 = readRectCoord(input);
+@@ -882,55 +898,59 @@
+     }
+   }
+   CDRPath path;
++  // Sublima: o original assumia x0 > 0 e y0 < 0; com outros sinais os cantos saiam invertidos (para fora)
++  const double ux = x0 >= 0.0 ? 1.0 : -1.0;
++  const double uy = y0 <= 0.0 ? -1.0 : 1.0;
++  const double sX = fabs(scaleX), sY = fabs(scaleY);
+   if (r0 > 0.0)
+-    path.appendMoveTo(0.0, -r0/scaleY);
++    path.appendMoveTo(0.0, uy*r0/sY);
+   else
+     path.appendMoveTo(0.0, 0.0);
+   if (r1 > 0.0)
+   {
+-    path.appendLineTo(0.0, y0+r1/scaleY);
++    path.appendLineTo(0.0, y0-uy*r1/sY);
+     if (corner_type == 0)
+-      path.appendQuadraticBezierTo(0.0, y0, r1/scaleX, y0);
++      appendRoundCorner(path, 0.0, y0-uy*r1/sY, 0.0, y0, ux*r1/sX, y0);
+     else if (corner_type == 1)
+-      path.appendQuadraticBezierTo(r1/scaleX, y0+r1/scaleY, r1/scaleX, y0);
++      path.appendQuadraticBezierTo(ux*r1/sX, y0-uy*r1/sY, ux*r1/sX, y0);
+     else if (corner_type == 2)
+-      path.appendLineTo(r1/scaleX, y0);
++      path.appendLineTo(ux*r1/sX, y0);
+   }
+   else
+     path.appendLineTo(0.0, y0);
+   if (r2 > 0.0)
+   {
+-    path.appendLineTo(x0-r2/scaleX, y0);
++    path.appendLineTo(x0-ux*r2/sX, y0);
+     if (corner_type == 0)
+-      path.appendQuadraticBezierTo(x0, y0, x0, y0+r2/scaleY);
++      appendRoundCorner(path, x0-ux*r2/sX, y0, x0, y0, x0, y0-uy*r2/sY);
+     else if (corner_type == 1)
+-      path.appendQuadraticBezierTo(x0-r2/scaleX, y0+r2/scaleY, x0, y0+r2/scaleY);
++      path.appendQuadraticBezierTo(x0-ux*r2/sX, y0-uy*r2/sY, x0, y0-uy*r2/sY);
+     else if (corner_type == 2)
+-      path.appendLineTo(x0, y0+r2/scaleY);
++      path.appendLineTo(x0, y0-uy*r2/sY);
+   }
+   else
+     path.appendLineTo(x0, y0);
+   if (r3 > 0.0)
+   {
+-    path.appendLineTo(x0, -r3/scaleY);
++    path.appendLineTo(x0, uy*r3/sY);
+     if (corner_type == 0)
+-      path.appendQuadraticBezierTo(x0, 0.0, x0-r3/scaleX, 0.0);
++      appendRoundCorner(path, x0, uy*r3/sY, x0, 0.0, x0-ux*r3/sX, 0.0);
+     else if (corner_type == 1)
+-      path.appendQuadraticBezierTo(x0-r3/scaleX, -r3/scaleY, x0-r3/scaleX, 0.0);
++      path.appendQuadraticBezierTo(x0-ux*r3/sX, uy*r3/sY, x0-ux*r3/sX, 0.0);
+     else if (corner_type == 2)
+-      path.appendLineTo(x0-r3/scaleX, 0.0);
++      path.appendLineTo(x0-ux*r3/sX, 0.0);
+   }
+   else
+     path.appendLineTo(x0, 0.0);
+   if (r0 > 0.0)
+   {
+-    path.appendLineTo(r0/scaleX, 0.0);
++    path.appendLineTo(ux*r0/sX, 0.0);
+     if (corner_type == 0)
+-      path.appendQuadraticBezierTo(0.0, 0.0, 0.0, -r0/scaleY);
++      appendRoundCorner(path, ux*r0/sX, 0.0, 0.0, 0.0, 0.0, uy*r0/sY);
+     else if (corner_type == 1)
+-      path.appendQuadraticBezierTo(r0/scaleX, -r0/scaleY, 0.0, -r0/scaleY);
++      path.appendQuadraticBezierTo(ux*r0/sX, uy*r0/sY, 0.0, uy*r0/sY);
+     else if (corner_type == 2)
+-      path.appendLineTo(0.0, -r0/scaleY);
++      path.appendLineTo(0.0, uy*r0/sY);
+   }
+   else
+     path.appendLineTo(0.0, 0.0);
+@@ -1818,7 +1838,16 @@
+     else if (argTypes[i] == 0x2af8)
+       readPolygonTransform(input);
+     else if (argTypes[i] == 0x1f40)
+-      readOpacity(input, length);
++    {
++      if (m_version >= 1600)
++        readTransparencyX6(input, length > argOffsets[i] ? length - argOffsets[i] : 0);
++      else
++        readOpacity(input, length);
++    }
++    else if (argTypes[i] == 0xbb8) // Sublima: sombra projetada (objeto 0x17 dentro de lnkg)
++      readDropShadow(input, length > argOffsets[i] ? length - argOffsets[i] : 0);
++    else if (argTypes[i] == 0x1f45) // Sublima: PowerClip contents reference (spnd id in clpt)
++      m_collector->collectPowerClipId(readU32(input));
+     else if (argTypes[i] == 0x64)
+     {
+       if (m_version < 400)
+@@ -1971,9 +2000,186 @@
+   unsigned colorModel, width, height, bpp;
+   std::vector<unsigned> palette;
+   readRImage(colorModel, width, height, bpp, palette, bitmap, input);
++  // Sublima: bloco "RI" seguinte com modelo 99 (0x63) = mascara de transparencia 8 bits
++  try
++  {
++    if (getRemainingLength(input) > 80 && readU16(input) == 0x4952)
++    {
++      input->seek(4 + 4 + 4, librevenge::RVNG_SEEK_CUR); // tamanho, 0, 0x4e
++      unsigned mModel = readU32(input);
++      input->seek(4, librevenge::RVNG_SEEK_CUR);
++      unsigned mW = readU32(input), mH = readU32(input);
++      input->seek(4, librevenge::RVNG_SEEK_CUR);
++      unsigned mBpp = readU32(input), mBpl = readU32(input), mSize = readU32(input);
++      input->seek(32, librevenge::RVNG_SEEK_CUR);
++      if (mModel == 0x63 && mBpp == 8 && mW == width && mH == height && mSize <= getRemainingLength(input) && mSize >= (unsigned long)mBpl * mH)
++      {
++        unsigned long got = 0;
++        const unsigned char *buf = input->read(mSize, got);
++        if (got == mSize)
++          m_collector->collectBmpMask(imageId, mW, mH, mBpl, std::vector<unsigned char>(buf, buf + got));
++      }
++    }
++  }
++  catch (...)
++  {
++  }
+   m_collector->collectBmp(imageId, colorModel, width, height, bpp, palette, bitmap);
+ }
+ 
++// Sublima: transparencia de objeto (X6+). Argumento 0x1f40 = cabecalho binario + JSON de estilo do objeto.
++//   u32 @37 = transparencia ligada; i32 @41 = tipo; double @69 = transparencia (%)
++//   JSON "transparency": { "mode", "fill": {"type", "fillName", "vectorBoundingBox", ...}, "startTransparency", ... }
++void libcdr::CDRParser::readTransparencyX6(librevenge::RVNGInputStream *input, unsigned long maxLen)
++{
++  const long start = input->tell();
++  if (maxLen > getRemainingLength(input))
++    maxLen = getRemainingLength(input);
++  if (maxLen < 90)
++    return;
++  unsigned long got = 0;
++  const unsigned char *buf = input->read(maxLen, got);
++  if (!buf || got < 90)
++    return;
++  std::vector<unsigned char> b(buf, buf + got);
++  input->seek(start, librevenge::RVNG_SEEK_SET);
++  auto u32 = [&](size_t o) -> unsigned { return o + 4 <= b.size() ? (unsigned)(b[o] | (b[o+1] << 8) | (b[o+2] << 16) | ((unsigned)b[o+3] << 24)) : 0u; };
++  auto dbl = [&](size_t o) -> double { double d = 0.0; if (o + 8 <= b.size()) memcpy(&d, &b[o], 8); return d; };
++  librevenge::RVNGPropertyList props;
++  unsigned enabled = u32(37);
++  int ttype = (int)u32(41);
++  double amount = dbl(69);
++  props.insert("sublima:transp-enabled", (int)enabled);
++  props.insert("sublima:transp-type", ttype);
++  if (std::isfinite(amount))
++    props.insert("sublima:transp-amount", amount, librevenge::RVNG_GENERIC);
++  // localizar o JSON: u32 tamanho seguido de '{'
++  for (size_t p = 4; p + 2 < b.size(); ++p)
++  {
++    if (b[p] != '{')
++      continue;
++    bool utf16 = b[p + 1] == 0;
++    const size_t step = utf16 ? 2 : 1;
++    // fim do JSON por contagem de chaves (o campo de tamanho varia entre versoes)
++    size_t bytes = 0;
++    {
++      int depth = 0;
++      bool inStr = false, esc = false;
++      for (size_t q = p; q + step - 1 < b.size(); q += step)
++      {
++        unsigned char ch = b[q];
++        if (utf16 && b[q + 1] != 0) { esc = false; continue; }
++        if (inStr)
++        {
++          if (esc) esc = false;
++          else if (ch == '\\') esc = true;
++          else if (ch == '"') inStr = false;
++          continue;
++        }
++        if (ch == '"') inStr = true;
++        else if (ch == '{') ++depth;
++        else if (ch == '}' && --depth == 0) { bytes = q + step - p; break; }
++      }
++    }
++    if (!bytes)
++      continue;
++    std::string json;
++    if (utf16)
++    {
++      for (size_t q = p; q + 1 < p + bytes; q += 2)
++      {
++        unsigned c = b[q] | (b[q+1] << 8);
++        if (c < 0x80) json += (char)c;
++        else if (c < 0x800) { json += (char)(0xc0 | (c >> 6)); json += (char)(0x80 | (c & 0x3f)); }
++        else { json += (char)(0xe0 | (c >> 12)); json += (char)(0x80 | ((c >> 6) & 0x3f)); json += (char)(0x80 | (c & 0x3f)); }
++      }
++    }
++    else
++      json.assign((const char *)&b[p], bytes);
++    try
++    {
++      boost::property_tree::ptree pt;
++      std::stringstream ss(json);
++      boost::property_tree::read_json(ss, pt);
++      boost::optional<boost::property_tree::ptree &> tr = pt.get_child_optional("transparency");
++      if (tr)
++      {
++        std::stringstream out;
++        boost::property_tree::write_json(out, tr.get(), false);
++        props.insert("sublima:transp-json", out.str().c_str());
++      }
++    }
++    catch (...)
++    {
++    }
++    break;
++  }
++  m_collector->collectTransparency(props);
++}
++
++// Sublima: parametros da sombra projetada (argumento 0xbb8). Calibrado com PDF exportado do CorelDRAW 2020:
++//   i32 @8, @12 = deslocamento x, y (1/254000 pol, y para cima); u32 @16 = opacidade 0..255;
++//   u32 @65 = cor (0x00RRGGBB); demais campos guardados brutos para calibracao futura.
++void libcdr::CDRParser::readDropShadow(librevenge::RVNGInputStream *input, unsigned long maxLen)
++{
++  const long start = input->tell();
++  if (maxLen > getRemainingLength(input))
++    maxLen = getRemainingLength(input);
++  if (maxLen < 64)
++    return;
++  unsigned long got = 0;
++  const unsigned char *buf = input->read(maxLen < 112 ? maxLen : 112, got);
++  if (!buf || got < 64)
++    return;
++  std::vector<unsigned char> b(buf, buf + got);
++  input->seek(start, librevenge::RVNG_SEEK_SET);
++  auto u32 = [&](size_t o) -> unsigned { return o + 4 <= b.size() ? (unsigned)(b[o] | (b[o+1] << 8) | (b[o+2] << 16) | ((unsigned)b[o+3] << 24)) : 0u; };
++  librevenge::RVNGPropertyList props;
++  props.insert("sublima:shadow-dx-in", (double)(int)u32(8) / 254000.0, librevenge::RVNG_GENERIC);
++  props.insert("sublima:shadow-dy-in", (double)(int)u32(12) / 254000.0, librevenge::RVNG_GENERIC);
++  props.insert("sublima:shadow-opacity", (double)u32(16) / 255.0, librevenge::RVNG_GENERIC);
++  unsigned c = u32(65);
++  librevenge::RVNGString color;
++  color.sprintf("#%.2x%.2x%.2x", (c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff);
++  props.insert("sublima:shadow-color", color);
++  librevenge::RVNGString raw;
++  for (size_t i = 0; i < b.size(); ++i)
++  {
++    librevenge::RVNGString h;
++    h.sprintf("%.2x", b[i]);
++    raw.append(h);
++  }
++  props.insert("sublima:shadow-raw", raw);
++  m_collector->collectDropShadow(props);
++}
++
++// Sublima: tabela de vinculos. [tamanho][n][tamanho cabecalho][offsets...]; cada entrada: tipo, a, b
++// tipos vistos: 0xe0 = sombra projetada (a = sombra, b = objeto); 0x40 = texto em curva (a = texto, b = curva)
++void libcdr::CDRParser::readLnkt(librevenge::RVNGInputStream *input, unsigned length)
++{
++  if (!_redirectX6Chunk(&input, length))
++    return;
++  const long start = input->tell();
++  unsigned total = readU32(input);
++  unsigned n = readU32(input);
++  if (n > 10000 || total > getRemainingLength(input) + 8)
++    return;
++  readU32(input); // tamanho do cabecalho
++  std::vector<unsigned> offs;
++  for (unsigned i = 0; i < n; ++i)
++    offs.push_back(readU32(input));
++  for (unsigned o : offs)
++  {
++    if (o + 12 > total)
++      continue;
++    input->seek(start + o, librevenge::RVNG_SEEK_SET);
++    unsigned type = readU32(input);
++    unsigned a = readU32(input);
++    unsigned b = readU32(input);
++    m_collector->collectLink(type, a, b);
++  }
++}
++
+ void libcdr::CDRParser::readOpacity(librevenge::RVNGInputStream *input, unsigned /* length */)
+ {
+   if (m_version < 1300)
+@@ -1981,6 +2187,10 @@
+   else
+     input->seek(14, librevenge::RVNG_SEEK_CUR);
+   double opacity = (double)readU16(input) / 1000.0;
++  // Sublima: em X7+ ha tipos de transparencia (nao uniforme etc.) que este leitor nao entende e
++  // resultavam em opacidade 0 (objeto invisivel). Ate mapearmos esses tipos, tratamos 0 como opaco.
++  if (opacity <= 0.0)
++    return;
+   m_collector->collectFillOpacity(opacity);
+ }
+ 
+@@ -2008,6 +2218,8 @@
+     return;
+   input->seek(4, librevenge::RVNG_SEEK_CUR);
+   unsigned dataSize = readU32(input);
++  if (dataSize == 0)
++    return;
+   unsigned long tmpNumBytesRead = 0;
+   input->seek(24, librevenge::RVNG_SEEK_CUR); // TODO: is this empirical experience universal???
+   const unsigned char *tmpBuffer = input->read(dataSize, tmpNumBytesRead);
+@@ -2709,6 +2921,21 @@
+       unsigned textOnPath = readU32(input);
+       if (textOnPath == 1)
+       {
++        {
++          // Sublima: parametros do texto em curva
++          long pos = input->tell();
++          librevenge::RVNGPropertyList tp;
++          const char *names[12] = {"var1", "orientation", "var2", "var3", "offset", "var4", "distance", "var5", "mirror-v", "mirror-h", "var6", "var7"};
++          for (int q = 0; q < 12; ++q)
++          {
++            librevenge::RVNGString key("sublima:tp-");
++            key.append(names[q]);
++            tp.insert(key.cstr(), (int)readU32(input));
++          }
++          tp.insert("sublima:tp-frame", (int)frameId);
++          m_collector->collectTextOnPath(tp);
++          input->seek(pos, librevenge::RVNG_SEEK_SET);
++        }
+         input->seek(4, librevenge::RVNG_SEEK_CUR); // var1
+         input->seek(4, librevenge::RVNG_SEEK_CUR); // Orientation
+         input->seek(4, librevenge::RVNG_SEEK_CUR); // var2
+@@ -3132,6 +3359,11 @@
+   m_collector->collectParagraphText(0.0, 0.0, width, height);
+ }
+ 
++// A style string holds a JSON document, and the parser that reads it descends
++// once for every open brace or bracket. A real style string has a dozen of
++// them at most, nested three deep.
++constexpr std::ptrdiff_t MAX_STYLE_CONTAINERS = 1 << 8;
++
+ void libcdr::CDRParser::_readX6StyleString(librevenge::RVNGInputStream *input, unsigned long length, libcdr::CDRStyle &style)
+ {
+   if (length > getRemainingLength(input))
+@@ -3153,6 +3385,11 @@
+     libcdr::appendCharacters(styleString, styleBuffer);
+   CDR_DEBUG_MSG(("CDRParser::_readX6StyleString - styleString = \"%s\"\n", styleString.cstr()));
+ 
++  const char *styleText = styleString.cstr();
++  if (styleText && std::count_if(styleText, styleText + styleString.size(),
++                                 [](char c) { return c == '{' || c == '['; }) > MAX_STYLE_CONTAINERS)
++    return;
++
+   boost::property_tree::ptree pt;
+ #ifndef DEBUG
+   try
+@@ -3219,11 +3456,31 @@
+     }
+   }
+ 
++  if (pt.count("character"))
++  {
++    boost::optional<double> v;
++    if (!!(v = pt.get_optional<double>("character.h_shift"))) style.m_hShift = v.get();
++    if (!!(v = pt.get_optional<double>("character.v_shift"))) style.m_vShift = v.get();
++    if (!!(v = pt.get_optional<double>("character.angle"))) style.m_charAngle = v.get();
++    if (!!(v = pt.get_optional<double>("character.latin.weight"))) style.m_weight = v.get();
++    if (!!(v = pt.get_optional<double>("character.latin.italic"))) style.m_italic = v.get();
++    boost::optional<boost::property_tree::ptree &> cf = pt.get_child_optional("character.fill");
++    if (cf)
++    {
++      std::stringstream out;
++      boost::property_tree::write_json(out, cf.get(), false);
++      style.m_fillJson = out.str().c_str();
++    }
++  }
+   if (pt.count("paragraph"))
+   {
+     boost::optional<unsigned> align = pt.get_optional<unsigned>("paragraph.justify");
+     if (!!align)
+       style.m_align = align.get();
++    boost::optional<double> v;
++    if (!!(v = pt.get_optional<double>("paragraph.interCharSpacing"))) style.m_charSpacing = v.get();
++    if (!!(v = pt.get_optional<double>("paragraph.interWordSpacing"))) style.m_wordSpacing = v.get();
++    if (!!(v = pt.get_optional<double>("paragraph.interLineSpacing"))) style.m_lineSpacing = v.get();
+   }
+ }
+ 
+diff -ru '--exclude=sublima' '--exclude=.git' upstream/libcdr/src/lib/CDRParser.h fork/src/lib/CDRParser.h
+--- upstream/libcdr/src/lib/CDRParser.h	2026-10-15 18:26:15.440102206 +0000
++++ fork/src/lib/CDRParser.h	2026-10-15 18:05:45.000000000 +0000
+@@ -60,6 +60,9 @@
+   void readWaldoFill(librevenge::RVNGInputStream *input);
+   void readWaldoLoda(librevenge::RVNGInputStream *input, unsigned length);
+   void readOpacity(librevenge::RVNGInputStream *input, unsigned length);
++  void readTransparencyX6(librevenge::RVNGInputStream *input, unsigned long maxLen);
++  void readDropShadow(librevenge::RVNGInputStream *input, unsigned long maxLen);
++  void readLnkt(librevenge::RVNGInputStream *input, unsigned length);
+   void readTrfd(librevenge::RVNGInputStream *input, unsigned length);
+   void readFild(librevenge::RVNGInputStream *input, unsigned length);
+   void readOutl(librevenge::RVNGInputStream *input, unsigned length);
+diff -ru '--exclude=sublima' '--exclude=.git' upstream/libcdr/src/lib/CDRPath.cpp fork/src/lib/CDRPath.cpp
+--- upstream/libcdr/src/lib/CDRPath.cpp	2026-10-15 18:26:15.440102206 +0000
++++ fork/src/lib/CDRPath.cpp	2026-10-15 18:05:45.000000000 +0000
+@@ -873,6 +873,11 @@
+   return m_elements.empty();
+ }
+ 
++size_t CDRPath::count() const
++{
++  return m_elements.size();
++}
++
+ bool CDRPath::isClosed() const
+ {
+   return m_isClosed;
+diff -ru '--exclude=sublima' '--exclude=.git' upstream/libcdr/src/lib/CDRPath.h fork/src/lib/CDRPath.h
+--- upstream/libcdr/src/lib/CDRPath.h	2026-10-15 18:26:15.441102263 +0000
++++ fork/src/lib/CDRPath.h	2026-10-15 18:05:45.000000000 +0000
+@@ -59,6 +59,7 @@
+ 
+   void clear();
+   bool empty() const;
++  size_t count() const;
+   bool isClosed() const;
+ 
+ private:
+diff -ru '--exclude=sublima' '--exclude=.git' upstream/libcdr/src/lib/CDRStylesCollector.h fork/src/lib/CDRStylesCollector.h
+--- upstream/libcdr/src/lib/CDRStylesCollector.h	2026-10-15 18:26:15.441102263 +0000
++++ fork/src/lib/CDRStylesCollector.h	2026-10-15 18:05:45.000000000 +0000
+@@ -51,6 +51,12 @@
+   void collectBitmap(unsigned, double, double, double, double) override {}
+   void collectBmp(unsigned imageId, unsigned colorModel, unsigned width, unsigned height, unsigned bpp, const std::vector<unsigned> &palette, const std::vector<unsigned char> &bitmap) override;
+   void collectBmp(unsigned imageId, const std::vector<unsigned char> &bitmap) override;
++  void collectBmpMask(unsigned imageId, unsigned width, unsigned height, unsigned bpl, const std::vector<unsigned char> &mask) override
++  {
++    CDRParserState::BmpMask m; m.width = width; m.height = height; m.bpl = bpl;
++    if (!mask.empty()) m.data = librevenge::RVNGBinaryData(&mask[0], mask.size());
++    m_ps.m_bmpMasks[imageId] = m;
++  }
+   void collectBmpf(unsigned patternId, unsigned width, unsigned height, const std::vector<unsigned char> &pattern) override;
+   void collectPpdt(const std::vector<std::pair<double, double> > &, const std::vector<unsigned> &) override {}
+   void collectFillTransform(const CDRTransforms &) override {}
+diff -ru '--exclude=sublima' '--exclude=.git' upstream/libcdr/src/lib/CDRTypes.cpp fork/src/lib/CDRTypes.cpp
+--- upstream/libcdr/src/lib/CDRTypes.cpp	2026-10-15 18:26:15.441102263 +0000
++++ fork/src/lib/CDRTypes.cpp	2026-10-15 18:05:45.000000000 +0000
+@@ -11,9 +11,13 @@
+ 
+ #include "CDRPath.h"
+ 
++// A polygon repeats its sub-path once for every angle, so the number of angles
++// and the size of the sub-path multiply together into the size of the outline.
++static const size_t MAX_POLYGON_ELEMENTS = 1 << 14;
++
+ void libcdr::CDRPolygon::create(libcdr::CDRPath &path) const
+ {
+-  if (m_numAngles == 0)
++  if (m_numAngles == 0 || path.empty())
+     return;
+ 
+   libcdr::CDRPath tmpPath(path);
+@@ -21,7 +25,7 @@
+   if (m_nextPoint && m_numAngles % m_nextPoint)
+   {
+     libcdr::CDRTransform tmpTrafo(cos(m_nextPoint*step), sin(m_nextPoint*step), 0.0, -sin(m_nextPoint*step), cos(m_nextPoint*step), 0.0);
+-    for (unsigned i = 1; i < m_numAngles; ++i)
++    for (unsigned i = 1; i < m_numAngles && path.count() < MAX_POLYGON_ELEMENTS; ++i)
+     {
+       tmpPath.transform(tmpTrafo);
+       path.appendPath(tmpPath);
+@@ -31,14 +35,14 @@
+   {
+     libcdr::CDRTransform tmpTrafo(cos(m_nextPoint*step), sin(m_nextPoint*step), 0.0, -sin(m_nextPoint*step), cos(m_nextPoint*step), 0.0);
+     libcdr::CDRTransform tmpShift(cos(step), sin(step), 0.0, -sin(step), cos(step), 0.0);
+-    for (unsigned i = 0; i < m_nextPoint; ++i)
++    for (unsigned i = 0; i < m_nextPoint && path.count() < MAX_POLYGON_ELEMENTS; ++i)
+     {
+       if (i)
+       {
+         tmpPath.transform(tmpShift);
+         path.appendPath(tmpPath);
+       }
+-      for (unsigned j=1; j < m_numAngles / m_nextPoint; ++j)
++      for (unsigned j=1; j < m_numAngles / m_nextPoint && path.count() < MAX_POLYGON_ELEMENTS; ++j)
+       {
+         tmpPath.transform(tmpTrafo);
+         path.appendPath(tmpPath);
+diff -ru '--exclude=sublima' '--exclude=.git' upstream/libcdr/src/lib/CDRTypes.h fork/src/lib/CDRTypes.h
+--- upstream/libcdr/src/lib/CDRTypes.h	2026-10-15 18:26:15.441102263 +0000
++++ fork/src/lib/CDRTypes.h	2026-10-15 18:05:45.000000000 +0000
+@@ -12,6 +12,7 @@
+ 
+ #include <utility>
+ #include <vector>
++#include <cmath>
+ #include <math.h>
+ #include <librevenge/librevenge.h>
+ #include "CDRTransforms.h"
+@@ -148,10 +149,15 @@
+   CDRLineStyle m_lineStyle;
+   CDRFillStyle m_fillStyle;
+   unsigned m_parentId;
++  // Sublima: atributos de texto do Corel (X6+), valores brutos; NaN = nao definido
++  double m_charSpacing, m_wordSpacing, m_lineSpacing, m_hShift, m_vShift, m_charAngle, m_weight, m_italic;
++  librevenge::RVNGString m_fillJson;
+   CDRStyle()
+     : m_charSet((unsigned short)-1), m_fontName(),
+       m_fontSize(0.0), m_align(0), m_leftIndent(0.0), m_firstIndent(0.0),
+-      m_rightIndent(0.0), m_lineStyle(), m_fillStyle(), m_parentId(0)
++      m_rightIndent(0.0), m_lineStyle(), m_fillStyle(), m_parentId(0),
++      m_charSpacing(NAN), m_wordSpacing(NAN), m_lineSpacing(NAN), m_hShift(NAN), m_vShift(NAN),
++      m_charAngle(NAN), m_weight(NAN), m_italic(NAN)
+   {
+     m_fontName.clear();
+   }
+@@ -176,6 +182,15 @@
+       m_lineStyle = override.m_lineStyle;
+     if (override.m_fillStyle.fillType != (unsigned short)-1)
+       m_fillStyle = override.m_fillStyle;
++    if (!std::isnan(override.m_charSpacing)) m_charSpacing = override.m_charSpacing;
++    if (!std::isnan(override.m_wordSpacing)) m_wordSpacing = override.m_wordSpacing;
++    if (!std::isnan(override.m_lineSpacing)) m_lineSpacing = override.m_lineSpacing;
++    if (!std::isnan(override.m_hShift)) m_hShift = override.m_hShift;
++    if (!std::isnan(override.m_vShift)) m_vShift = override.m_vShift;
++    if (!std::isnan(override.m_charAngle)) m_charAngle = override.m_charAngle;
++    if (!std::isnan(override.m_weight)) m_weight = override.m_weight;
++    if (!std::isnan(override.m_italic)) m_italic = override.m_italic;
++    if (override.m_fillJson.len()) m_fillJson = override.m_fillJson;
+   }
+ };
+ 
+diff -ru '--exclude=sublima' '--exclude=.git' upstream/libcdr/src/lib/CMXParser.cpp fork/src/lib/CMXParser.cpp
+--- upstream/libcdr/src/lib/CMXParser.cpp	2026-10-15 18:26:15.441102263 +0000
++++ fork/src/lib/CMXParser.cpp	2026-10-15 18:05:45.000000000 +0000
+@@ -74,7 +74,7 @@
+   : CommonParser(collector),
+     m_bigEndian(false), m_unit(0),
+     m_scale(0.0), m_xmin(0.0), m_xmax(0.0), m_ymin(0.0), m_ymax(0.0),
+-    m_fillIndex(0), m_nextInstructionOffset(0), m_parserState(parserState),
++    m_fillIndex(0), m_nextInstructionOffset(0), m_pagesRead(), m_parserState(parserState),
+     m_currentImageInfo(), m_currentPattern(), m_currentBitmap() {}
+ 
+ libcdr::CMXParser::~CMXParser()
+@@ -464,6 +464,8 @@
+     default:
+       break;
+     }
++    if (m_nextInstructionOffset <= (unsigned long)startPosition)
++      break;
+     input->seek(m_nextInstructionOffset, librevenge::RVNG_SEEK_SET);
+   }
+ }
+@@ -614,7 +616,15 @@
+         readRenderingAttributes(input);
+         break;
+       case CMX_Tag_PolyCurve_PointList:
++      {
+         pointNum = readU16(input, m_bigEndian);
++        // The points sit inside this tag, so its own length says how many of
++        // them there is room for.
++        const long tagEnd = startOffset + tagLength;
++        const long here = input->tell();
++        const unsigned long pointsInTag = tagEnd > here ? (unsigned long)(tagEnd - here) / (2 * 4 + 1) : 0;
++        if (pointNum > pointsInTag)
++          pointNum = pointsInTag;
+         if (pointNum > getRemainingLength(input) / (2 * 4 + 1))
+           pointNum = getRemainingLength(input) / (2 * 4 + 1);
+         points.reserve(pointNum);
+@@ -629,6 +639,7 @@
+         for (unsigned long j = 0; j < pointNum; ++j)
+           pointTypes.push_back(readU8(input, m_bigEndian));
+         break;
++      }
+       default:
+         break;
+       }
+@@ -2052,7 +2063,8 @@
+     /* unsigned layerTableOffset = */ readU32(input, m_bigEndian);
+     /* unsigned thumbnailOffset = */ readU32(input, m_bigEndian);
+     /* unsigned refListOffset = */ readU32(input, m_bigEndian);
+-    if (pageOffset && pageOffset != (unsigned)-1)
++    // Read each page once, however often the index lists it or is itself read.
++    if (pageOffset && pageOffset != (unsigned)-1 && m_pagesRead.insert(pageOffset).second)
+     {
+       long oldOffset = input->tell();
+       input->seek(pageOffset, librevenge::RVNG_SEEK_SET);
+@@ -2155,6 +2167,8 @@
+       if (tagId == CMX_Tag_EndTag)
+         break;
+       unsigned tagLength = readU32(input, m_bigEndian);
++      if (tagLength < 5)
++        tagLength = 5;
+       switch (tagId)
+       {
+       case CMX_Tag_DescrSection_Image_ImageData:
+diff -ru '--exclude=sublima' '--exclude=.git' upstream/libcdr/src/lib/CMXParser.h fork/src/lib/CMXParser.h
+--- upstream/libcdr/src/lib/CMXParser.h	2026-10-15 18:26:15.441102263 +0000
++++ fork/src/lib/CMXParser.h	2026-10-15 18:05:45.000000000 +0000
+@@ -13,6 +13,7 @@
+ #include <vector>
+ #include <map>
+ #include <memory>
++#include <set>
+ 
+ #include <librevenge-stream/librevenge-stream.h>
+ 
+@@ -168,6 +169,7 @@
+   double m_xmin, m_xmax, m_ymin, m_ymax;
+   unsigned m_fillIndex;
+   unsigned long m_nextInstructionOffset;
++  std::set<unsigned> m_pagesRead;
+   CMXParserState &m_parserState;
+   CMXImageInfo m_currentImageInfo;
+   std::unique_ptr<CDRPattern> m_currentPattern;

@@ -1,0 +1,106 @@
+name: Importador
+
+# O importador de CDR (importer/: fork do libcdr + cdr2json + cdrjs) e o motor de cor (importer/color) compilados do
+# zero: cdr2json nativo e o cdrjs.js/colorjs.js em JavaScript puro (Emscripten, -sWASM=0). Os .js gerados têm de ser
+# iguais aos commitados em apps/editor/public (o editor e os testes usam os commitados): se divergirem, o job falha e
+# os gerados ficam no artefato `importador-js` para serem commitados (README, "Compilar o importador").
+# Tudo pinado para o arquivo sair igual a cada compilação: imagem, fontes do zlib/librevenge (sha256), LittleCMS
+# (commit), Emscripten (versão) e a action que o instala (commit).
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - 'importer/**'
+      - 'apps/editor/public/cdrjs.js'
+      - 'apps/editor/public/colorjs.js'
+      - '.github/workflows/importador.yml'
+  push:
+    branches: [main, 'fase3/**']
+    paths:
+      - 'importer/**'
+      - 'apps/editor/public/cdrjs.js'
+      - 'apps/editor/public/colorjs.js'
+      - '.github/workflows/importador.yml'
+
+concurrency:
+  group: importador-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  importador:
+    runs-on: ubuntu-24.04
+    env:
+      DEPS: ${{ github.workspace }}/../wasmdeps
+      OBJ: ${{ github.workspace }}/../cdrjs-obj
+      UBUNTU_POOL: http://archive.ubuntu.com/ubuntu/pool/main
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pacotes do sistema (os do README)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y librevenge-dev libicu-dev liblcms2-dev libboost-dev zlib1g-dev autoconf automake libtool pkg-config dpkg-dev
+      - name: Fontes pinadas do zlib, do librevenge (pacotes do noble, sha256) e do LittleCMS (commit)
+        run: |
+          mkdir -p "$DEPS" && cd "$DEPS"
+          cat > fontes.sha256 <<'FIM'
+          5eea0322c1c21c75cad3b607ac1c43ff5c71e014b8ac4a34300b5e2b80d02e70  zlib_1.3.dfsg.orig.tar.xz
+          645a2ecc2a3c1d263784717ba7f5ad6672261979523461a4d6cdbed217caae59  zlib_1.3.dfsg-3.1ubuntu2.debian.tar.xz
+          53784a98f595c549aed67b3c35caf5d9783223c7a9e3a5493da4c500809a8bd6  zlib_1.3.dfsg-3.1ubuntu2.dsc
+          5892ca6796f7a2a93d580832e907e849b19d980b40d326a283b18877ab6de0c5  librevenge_0.0.5.orig.tar.bz2
+          6f9ac3628c7420702d24ca0ba3e979d89c4be1eb24832492bb628e7e7319edc3  librevenge_0.0.5-3build1.debian.tar.xz
+          0d391fe991aea9beff51ac91eaa1f6870726baacf8a4a5c485e0f95ca3db3d15  librevenge_0.0.5-3build1.dsc
+          FIM
+          for f in zlib_1.3.dfsg.orig.tar.xz zlib_1.3.dfsg-3.1ubuntu2.debian.tar.xz zlib_1.3.dfsg-3.1ubuntu2.dsc; do
+            curl -fsSLO "$UBUNTU_POOL/z/zlib/$f"; done
+          for f in librevenge_0.0.5.orig.tar.bz2 librevenge_0.0.5-3build1.debian.tar.xz librevenge_0.0.5-3build1.dsc; do
+            curl -fsSLO "$UBUNTU_POOL/libr/librevenge/$f"; done
+          sha256sum -c fontes.sha256
+          dpkg-source -x zlib_1.3.dfsg-3.1ubuntu2.dsc
+          dpkg-source -x librevenge_0.0.5-3build1.dsc
+          git init -q lcms2 && cd lcms2
+          git fetch -q --depth 1 https://github.com/mm2/Little-CMS.git 453bafeb85b4ef96498866b7a8eadcc74dff9223   # lcms2.16
+          git checkout -q FETCH_HEAD
+          ls "$DEPS"
+      - name: cdr2json nativo (com a libcdr ao lado, achada pelo rpath)
+        run: |
+          cd importer/libcdr && ./autogen.sh && ./configure --disable-werror --without-docs --disable-tests && make -j"$(nproc)"
+          cd ../cdr2json && g++ -O2 -std=c++17 cdr2json.cpp -I../libcdr/inc $(pkg-config --cflags --libs librevenge-0.0 librevenge-stream-0.0) \
+            -L../libcdr/src/lib/.libs -lcdr-0.1 -Wl,-rpath,'$ORIGIN' -o cdr2json
+          cp -L ../libcdr/src/lib/.libs/libcdr-0.1.so.1 . && strip libcdr-0.1.so.1
+      - name: cdr2json lê as fixtures (e lista as entradas do zip)
+        run: |
+          for f in apps/editor/tests/fixtures/*.cdr; do importer/cdr2json/cdr2json "$f" > /dev/null; echo "ok $f"; done
+          importer/cdr2json/cdr2json --zip-list apps/editor/tests/fixtures/arcos.cdr | tee "$RUNNER_TEMP/arcos.txt"
+          grep -qx 'styles/mascara-selo' "$RUNNER_TEMP/arcos.txt"
+          importer/cdr2json/cdr2json --zip-list apps/editor/tests/fixtures/fonte-embutida.cdr | tee "$RUNNER_TEMP/fonte.txt"
+          grep -qx 'embed/embedding0' "$RUNNER_TEMP/fonte.txt"
+      - name: Emscripten em versão fixa
+        uses: mymindstorm/setup-emsdk@6ab9eb1bda2574c4ddb79809fc9247783eaf9021   # v14
+        with:
+          version: 3.1.6
+          actions-cache-folder: emsdk-cache
+      - name: cdrjs.js e colorjs.js
+        run: |
+          sh importer/wasm/build.sh
+          LC="$DEPS/lcms2" sh importer/color/build.sh
+          mkdir -p "$RUNNER_TEMP/importador-js"
+          cp apps/editor/public/cdrjs.js apps/editor/public/colorjs.js "$RUNNER_TEMP/importador-js/"
+          cp importer/cdr2json/cdr2json importer/cdr2json/libcdr-0.1.so.1 "$RUNNER_TEMP/importador-js/"
+          sha256sum "$RUNNER_TEMP"/importador-js/*
+      - name: Guardar o cdrjs.js, o colorjs.js e o cdr2json gerados
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: importador-js
+          path: ${{ runner.temp }}/importador-js/
+          retention-days: 14
+      - name: cdrjs.js e colorjs.js gerados iguais aos commitados
+        run: |
+          if ! git diff --quiet -- apps/editor/public/cdrjs.js apps/editor/public/colorjs.js; then
+            git diff --stat -- apps/editor/public/cdrjs.js apps/editor/public/colorjs.js
+            echo "::error::cdrjs.js/colorjs.js commitados estão velhos: baixe o artefato importador-js deste run e commite os .js dele"
+            exit 1
+          fi
